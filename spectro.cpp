@@ -12,6 +12,8 @@
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
 
+static SDL_Window* screen;
+
 struct arguments {
     std::string filename;
     short exitCode = 0;
@@ -79,7 +81,7 @@ class Sound { // libsndfile snd SDL_mixer abstraction
 };
 
 void displayFFT(const std::vector<double>& buffer) {
-
+    if(!screen) return;
 }
 
 struct arguments parseArgs(int argc, char** argv) {
@@ -144,7 +146,7 @@ bool init()
     }
     */
 
-    SDL_Window *screen = SDL_CreateWindow("Music",
+    screen = SDL_CreateWindow("Music",
                           SDL_WINDOWPOS_UNDEFINED,
                           SDL_WINDOWPOS_UNDEFINED,
                           640, 480, SDL_WINDOW_OPENGL);
@@ -157,6 +159,11 @@ bool init()
 
     //If everything initialized fine
     return true;
+}
+
+void exit(void) {
+    std::cout << "Exiting" << std::endl;
+    SDL_Quit();
 }
 
 int main(int argc, char** argv) {
@@ -178,16 +185,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    {
-        Sound snd(args.filename);
-        if(snd.failedToOpen)
-            std::cout << "Failed to open the file" << std::endl;
-        else {
-            snd.displayInfo();
-            snd.read();
-            std::cout << "Starting playing" << std::endl;
-            play(snd);
-            std::cout << "Finished playing" << std::endl;
+    Sound snd(args.filename);
+    if(snd.failedToOpen) {
+        std::cout << "Failed to open the file" << std::endl;
+        return 1;
+    }
+    snd.displayInfo();
+    snd.read();
+    std::cout << "Starting playing" << std::endl;
+    play(snd);
+
+    std::atexit(exit);
+
+    while(true) {
+        SDL_Event event;
+        while(SDL_PollEvent(&event)) {
+            switch(event.type) {
+                case SDL_KEYDOWN:
+                    return 0; // calls std::atexit
+                default:
+                    break;
+            }
         }
     }
 
