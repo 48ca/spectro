@@ -5,8 +5,17 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/")
 
 set (CMAKE_CXX_STANDARD 14)
 
-find_package(SDL_mixer)
+find_package(SDL2)
+list(APPEND INCLUDE ${SDL2_INCLUDE_DIRS})
+list(APPEND LIBRARIES ${SDL2_LIBRARIES})
+
+find_package(SDL2_mixer)
+list(APPEND INCLUDE ${SDL2_MIXER_INCLUDE_DIRS})
+list(APPEND LIBRARIES ${SDL2_MIXER_LIBRARIES})
+
 find_package(LibSndFile ${PACKAGE_OPTION})
+list(APPEND INCLUDE ${LIBSNDFILE_INCLUDE_DIRS})
+list(APPEND LIBRARIES ${LIBSNDFILE_LIBRARIES})
 
 if(MSVC)
 	# Visual Studio -- /W4
@@ -21,7 +30,7 @@ elseif(CMAKE_COMPILER_IS_GNUXX OR CMAKE_COMPILER_IS_GNUCC)
 endif()
 
 add_executable(spectro spectro.cpp)
-target_include_directories( spectro PRIVATE ${SDL_MIXER_INCLUDE_DIRS} ${LIBSNDFILE_INCLUDE_DIRS})
-target_link_libraries(spectro ${SDL_MIXER_LIBRARIES} ${LIBSNDFILE_LIBRARIES})
+target_include_directories( spectro PRIVATE ${INCLUDE})
+target_link_libraries(spectro ${LIBRARIES})
 
 install(TARGETS spectro DESTINATION bin)

@@ -5,3 +5,9 @@ test-files/*
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+
+.ninja*
+build.ninja
+rules.ninja
+
+Makefile

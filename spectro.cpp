@@ -1,12 +1,16 @@
 #include <string>
 #include <iostream>
 #include <vector>
+#include <thread>
+#include <chrono>
 
 #include <stdlib.h>
 #include <sndfile.hh>
 
 #include <fftw3.h>
 #include <SDL2/SDL_mixer.h>
+#include <SDL2/SDL_surface.h>
+#include <SDL2/SDL.h>
 
 struct arguments {
     std::string filename;
@@ -14,16 +18,24 @@ struct arguments {
     std::string callee;
 };
 
-class Sound { // libsndfile abstraction
+class Sound { // libsndfile snd SDL_mixer abstraction
   private:
     SNDFILE* file;
 
     void open(void) {
         std::cout << "Opening file..." << std::endl;
         file = sf_open(filename.c_str(), SFM_READ, &info);
-        if(!file) failedToOpen = true;
+        std::cout << "Reading file" <<  std::endl;
+        if(!file) {
+            std::cerr << "libsndfile error occurred on read (unrecognized format?)" << std::endl;
+            failedToOpen = true;
+        }
+        std::cout << "Reading file again" <<  std::endl;
         music = Mix_LoadMUS(filename.c_str());
-        if(!music) failedToOpen = true;
+        if(!music) {
+            std::cerr << "Mix error: " << Mix_GetError() << std::endl;
+            failedToOpen = true;
+        }
     }
 
     void fillBuffer(void) {
@@ -61,6 +73,8 @@ class Sound { // libsndfile abstraction
     ~Sound() {
         if(file != nullptr)
             sf_close(file);
+        if(music != nullptr)
+            Mix_FreeMusic(music);
     }
 };
 
@@ -105,6 +119,44 @@ void play(const Sound& sound) {
     if(!sound.music) {
         std::cerr << "Failed to play music with SDL" << std::endl;
     }
+    std::cout << "Starting playback" << std::endl;
+    if(Mix_PlayMusic(sound.music, 1) == -1) {
+        std::cerr << Mix_GetError() << std::endl;
+    }
+}
+
+bool init()
+{
+    //Initialize all SDL subsystems
+    if( SDL_Init( SDL_INIT_AUDIO | SDL_INIT_VIDEO ) == -1 )
+    {
+        return false;
+    }
+
+    /*
+    //Set up the screen
+    screen = SDL_SetVideoMode( SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_BPP, SDL_SWSURFACE );
+
+    //If there was an error in setting up the screen
+    if( screen == NULL )
+    {
+        return false;
+    }
+    */
+
+    SDL_Window *screen = SDL_CreateWindow("Music",
+                          SDL_WINDOWPOS_UNDEFINED,
+                          SDL_WINDOWPOS_UNDEFINED,
+                          640, 480, SDL_WINDOW_OPENGL);
+
+    //Initialize SDL_mixer
+    if( Mix_OpenAudio( 22050, MIX_DEFAULT_FORMAT, 2, 4096 ) == -1 )
+    {
+        return false;
+    }
+
+    //If everything initialized fine
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -116,6 +168,16 @@ int main(int argc, char** argv) {
     std::cout << args.filename;
     std::cout << std::endl;
 
+    if(!init()) {
+        std::cerr << "Initialization is fucked" << std::endl;
+        return 1;
+    }
+
+    if(!Mix_Init(MIX_INIT_FLAC | MIX_INIT_MOD | MIX_INIT_MP3 | MIX_INIT_OGG)) {
+        std::cerr << "Mix_Init error: " << Mix_GetError() << std::endl;
+        return 1;
+    }
+
     {
         Sound snd(args.filename);
         if(snd.failedToOpen)
@@ -123,8 +185,9 @@ int main(int argc, char** argv) {
         else {
             snd.displayInfo();
             snd.read();
+            std::cout << "Starting playing" << std::endl;
             play(snd);
-            display(snd);
+            std::cout << "Finished playing" << std::endl;
         }
     }
 
