@@ -17,6 +17,10 @@ find_package(LibSndFile ${PACKAGE_OPTION})
 list(APPEND INCLUDE ${LIBSNDFILE_INCLUDE_DIRS})
 list(APPEND LIBRARIES ${LIBSNDFILE_LIBRARIES})
 
+find_package(FFTW)
+list(APPEND INCLUDE ${FFTW_INCLUDE_DIRS})
+list(APPEND LIBRARIES ${FFTW_LIBRARIES})
+
 if(MSVC)
 	# Visual Studio -- /W4
 	if(CMAKE_CXX_FLAGS MATCHES "/W[0-4]")
@@ -26,7 +30,7 @@ if(MSVC)
 	endif()
 elseif(CMAKE_COMPILER_IS_GNUXX OR CMAKE_COMPILER_IS_GNUCC)
 	# GCC -- -Wall -pedantic
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic -Wno-implicit-fallthrough")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic -Wno-implicit-fallthrough -lasan")
 endif()
 
 add_executable(spectro spectro.cpp)

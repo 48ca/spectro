@@ -20,6 +20,12 @@ struct arguments {
     std::string callee;
 };
 
+class Channel {
+  public:
+    Channel(std::vector<short>&& buf) : buffer(buf) {};
+    std::vector<short> buffer;
+};
+
 class Sound { // libsndfile snd SDL_mixer abstraction
   private:
     SNDFILE* file;
@@ -32,28 +38,31 @@ class Sound { // libsndfile snd SDL_mixer abstraction
             std::cerr << "libsndfile error occurred on read (unrecognized format?)" << std::endl;
             failedToOpen = true;
         }
-        std::cout << "Reading file again" <<  std::endl;
-        music = Mix_LoadMUS(filename.c_str());
-        if(!music) {
-            std::cerr << "Mix error: " << Mix_GetError() << std::endl;
-            failedToOpen = true;
-        }
     }
 
     void fillBuffer(void) {
-        if(!buffer.empty()) {
-            std::cerr << "Buffer already full?" << std::endl;
-        }
+        std::vector<short> buffer(info.frames * info.channels);
         buffer.reserve(info.frames * info.channels);
         /*sf_count_t read = */
-        sf_readf_double(file, &buffer[0], info.frames);
+        sf_readf_short(file, (short*)&buffer[0], info.frames); // short
+        std::cout << "Read" << std::endl;
+        for(int i = 0; i < info.channels; ++i) {
+            std::vector<short> tbuf(info.frames);
+            for(unsigned s = 0; s < info.frames; ++s)
+                tbuf[s] = buffer[s * info.channels + i];
+            channels.emplace_back(std::move(tbuf));
+        }
+        std::cout << "Created channel[0] with " << channels[0].buffer.size() << " entries" << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::cout << std::endl;
     }
 
   public:
     Mix_Music *music;
     std::string filename;
     SF_INFO info;
-    std::vector<double> buffer;
+    std::vector<Channel> channels;
+    // std::vector<short> buffer;
     bool failedToOpen = false;
 
     void displayInfo(void) const {
@@ -69,6 +78,33 @@ class Sound { // libsndfile snd SDL_mixer abstraction
             fillBuffer();
     }
 
+    bool startPlaying(unsigned position) {
+        /*
+        for(unsigned i = 10000; i < 10100; ++i) {
+            std::cout << channels[0].buffer[i] << ' ';
+        }
+        std::cout << std::endl;
+        */
+        Mix_Chunk chnk;
+        chnk.allocated = 1;
+        chnk.abuf = (uint8_t*) &(channels[0].buffer[position]);
+        chnk.alen = channels[0].buffer.size() - position;
+        chnk.volume = 128;
+        if(Mix_PlayChannel(-1, &chnk, 1) == -1) {
+            std::cout << Mix_GetError() << std::endl;
+            return false;
+        }
+        return true;
+        Mix_Chunk* c;
+        c = Mix_LoadWAV(filename.c_str());
+        if(Mix_PlayChannel(-1, c, 1) == -1) {
+            std::cout << Mix_GetError() << std::endl;
+            return false;
+        }
+        std::cout << "Playing" << std::endl;
+        return true;
+    }
+
     Sound(std::string fn) : file(nullptr), filename(fn) {
         open();
     }
@@ -79,10 +115,6 @@ class Sound { // libsndfile snd SDL_mixer abstraction
             Mix_FreeMusic(music);
     }
 };
-
-void displayFFT(const std::vector<double>& buffer) {
-    if(!screen) return;
-}
 
 struct arguments parseArgs(int argc, char** argv) {
     struct arguments args;
@@ -100,7 +132,7 @@ struct arguments parseArgs(int argc, char** argv) {
     return args;
 }
 
-void display(const Sound& sound) {
+void displayFFT(const Sound& sound) {
     if(sound.info.channels != 2) {
         std::cout << "Stereo input only please" << std::endl;
         return;
@@ -114,16 +146,6 @@ void display(const Sound& sound) {
     for(;
             left < max && right < max;
             left += sample_size * 2, right += sample_size * 2) {
-    }
-}
-
-void play(const Sound& sound) {
-    if(!sound.music) {
-        std::cerr << "Failed to play music with SDL" << std::endl;
-    }
-    std::cout << "Starting playback" << std::endl;
-    if(Mix_PlayMusic(sound.music, 1) == -1) {
-        std::cerr << Mix_GetError() << std::endl;
     }
 }
 
@@ -152,7 +174,7 @@ bool init()
                           640, 480, SDL_WINDOW_OPENGL);
 
     //Initialize SDL_mixer
-    if( Mix_OpenAudio( 22050, MIX_DEFAULT_FORMAT, 2, 4096 ) == -1 )
+    if( Mix_OpenAudio( 22050, AUDIO_S16SYS, 2, 4096 ) == -1 )
     {
         return false;
     }
@@ -163,6 +185,7 @@ bool init()
 
 void exit(void) {
     std::cout << "Exiting" << std::endl;
+    Mix_Quit();
     SDL_Quit();
 }
 
@@ -180,7 +203,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if(!Mix_Init(MIX_INIT_FLAC | MIX_INIT_MOD | MIX_INIT_MP3 | MIX_INIT_OGG)) {
+    if(!Mix_Init(MIX_INIT_FLAC | MIX_INIT_MOD | MIX_INIT_MP3 | MIX_INIT_OGG)) { // use cmake to figure out which of these should we used
         std::cerr << "Mix_Init error: " << Mix_GetError() << std::endl;
         return 1;
     }
@@ -192,21 +215,22 @@ int main(int argc, char** argv) {
     }
     snd.displayInfo();
     snd.read();
-    std::cout << "Starting playing" << std::endl;
-    play(snd);
 
     std::atexit(exit);
 
-    while(true) {
-        SDL_Event event;
-        while(SDL_PollEvent(&event)) {
-            switch(event.type) {
-                case SDL_KEYDOWN:
-                    return 0; // calls std::atexit
-                default:
-                    break;
-            }
+    if(snd.startPlaying(1000000))
+        while(1);
+        // std::this_thread::sleep_for(std::chrono::seconds(10));
+
+    SDL_Event event;
+    while(SDL_PollEvent(&event)) {
+        switch(event.type) {
+            case SDL_KEYDOWN:
+                return 0; // calls std::atexit
+            default:
+                break;
         }
+        displayFFT(snd);
     }
 
     return 0;
