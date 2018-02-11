@@ -58,22 +58,31 @@ class Sound { // libsndfile snd SDL_mixer abstraction
                 tbuf[s] = wave[s * info.channels + i];
             channels.emplace_back(std::move(tbuf));
         }
+        logger.log("Populated "s + std::to_string(info.channels) + " channels");
     }
 
   public:
-    Mix_Music *music;
     std::string filename;
-    SF_INFO info;
+    SF_INFO info = {};
     std::vector<Channel> channels;
     std::vector<short> wave; // libsndfile
     // std::vector<short> buffer;
     bool failedToOpen = false;
 
+    std::string getHumanLength() const {
+        if(!info.frames) return "ERROR";
+        int tseconds = info.frames/info.samplerate;
+        int minutes = tseconds/60;
+        int seconds = tseconds%60;
+        std::string secstr  = std::to_string(seconds);
+        return std::to_string(minutes)+':' + std::string(2 - secstr.length(), '0') + secstr;
+    }
     void displayInfo(void) const {
         std::cout << "/***** " << filename << " *****\\" << '\n'
                   << " * Channels: " << info.channels << '\n'
                   << " * Frames: " << info.frames << '\n'
                   << " * Sample rate: " << info.samplerate << '\n'
+                  << " * Length: " << getHumanLength() << '\n'
                   << "\\******" << std::string(filename.length(), '*') << "******/" << std::endl;
     }
 
@@ -83,28 +92,19 @@ class Sound { // libsndfile snd SDL_mixer abstraction
     }
 
     bool startPlaying(unsigned sample) {
-        /*
-        for(int i = 0; i < info.channels; ++i) {
-            Mix_Chunk chnk;
-            chnk.allocated = 1;
-            chnk.abuf = (uint8_t*) &(channels[0].buffer[position]);
-            chnk.alen = channels[0].buffer.size() - position;
-            chnk.volume = 100; // 128 = MAX
-            if(Mix_PlayChannel(i + 1, &chnk, 0) == -1) {
-                std::cerr << "Error in Mix_PlayChannel: " << Mix_GetError() << std::endl;
-                return false;
-            }
-        }
-        return true;
-        */
         int position = sample * info.channels;
+        int len = sizeof(short) * (wave.size() - position);
+        if(len <= 0) {
+            logger.error("Attempted to start playing past end of song");
+            return false;
+        }
         Mix_Chunk chnk;
         chnk.allocated = 1;
         chnk.abuf = (uint8_t*) &(wave[position]);
         chnk.alen = sizeof(short) * (wave.size() - position);
         chnk.volume = 100; // 128 = MAX
         if(Mix_PlayChannel(-1, &chnk, 0) == -1) {
-            std::cerr << "Error in Mix_PlayChannel: " << Mix_GetError() << std::endl;
+            logger.error("Error in Mix_PlayChannel: "s + Mix_GetError());
             return false;
         }
         return true;
@@ -116,8 +116,6 @@ class Sound { // libsndfile snd SDL_mixer abstraction
     ~Sound() {
         if(file != nullptr)
             sf_close(file);
-        if(music != nullptr)
-            Mix_FreeMusic(music);
     }
 };
 
@@ -164,12 +162,12 @@ bool init()
                           SDL_WINDOWPOS_UNDEFINED,
                           640, 480, SDL_WINDOW_OPENGL);
 
-    //If everything initialized fine
     return true;
 }
 
 void exit(void) {
     logger.log("Exiting...");
+    Mix_CloseAudio();
     Mix_Quit();
     SDL_Quit();
 }
@@ -185,11 +183,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if(!Mix_Init(MIX_INIT_FLAC | MIX_INIT_MOD | MIX_INIT_MP3 | MIX_INIT_OGG)) { // use cmake to figure out which of these should we used
-        logger.error("Mix_Init error: "s + Mix_GetError());
-        return 1;
-    }
-
     Sound snd(args.filename);
     if(snd.failedToOpen) {
         logger.error("Failed to open file");
@@ -198,22 +191,40 @@ int main(int argc, char** argv) {
     snd.displayInfo();
     snd.read();
 
-    std::atexit(exit);
-
-    Mix_AllocateChannels(2);
+    // Mix_AllocateChannels(2);
     // Mix_SetPanning(1, 255, 0);
     // Mix_SetPanning(2, 0, 255);
 
-    snd.startPlaying(3.5 * 60 * snd.info.samplerate);
+    std::thread sound_thread([&snd]() {
+        logger.log("Started sound thread");
+        /*
+        snd.startPlaying(3.5 * 60 * snd.info.samplerate); // start 3.5 minutes into the song
+        Mix_HaltChannel(-1);
+        */
+        snd.startPlaying(0);
+    });
+
+    std::thread display_thread([]() {
+
+    });
 
     SDL_Event event;
-    while(SDL_PollEvent(&event), true) {
-        switch(event.type) {
-            case SDL_KEYDOWN:
-                return 0; // calls std::atexit
+    bool running = true;
+    while(running) {
+        while(SDL_PollEvent(&event)) {
+            logger.log("got event");
+            switch(event.type) {
+                case SDL_KEYDOWN:
+                    running = false;
+                    break;
+            }
+            // displayFFT(snd);
         }
-        // displayFFT(snd);
     }
+
+    exit();
+    sound_thread.join();
+    display_thread.join();
 
     return 0;
 }
