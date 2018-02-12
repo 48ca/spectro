@@ -9,7 +9,9 @@
 #include <stdlib.h>
 #include <sndfile.hh>
 
+#include <complex.h> // for fftw_complex == double complex
 #include <fftw3.h>
+
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
@@ -135,19 +137,22 @@ struct arguments parseArgs(int argc, char** argv) {
     return args;
 }
 
-void displayFFT(const Sound& sound) {
-    if(sound.info.channels != 2) {
-        return;
-    }
+void displayFFT(const std::vector<short>& buffer, int below, int size) {
+    fftw_complex *in, *out;
+    fftw_plan p;
 
-    const long sample_size = 44100;
-    unsigned long max = sound.info.frames * sound.info.channels;
-    unsigned long left = 0;
-    unsigned long right = 1;
-    for(;
-            left < max && right < max;
-            left += sample_size * 2, right += sample_size * 2) {
+    in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * size);
+    out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * size);
+    p = fftw_plan_dft_1d(size, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+    for(int i = 0; i < size; ++i) {
+        in[i][0] = buffer[i + below];
+        in[i][1] = 0;
     }
+    fftw_execute(p);
+    for(int i = 0; i < size; ++i) {
+        std::cout << sqrt(out[i][0]*out[i][0] + out[i][1]*out[i][1]) << ' ';
+    }
+    std::cout << '\n';
 }
 
 bool init()
@@ -195,6 +200,8 @@ int main(int argc, char** argv) {
     // Mix_SetPanning(1, 255, 0);
     // Mix_SetPanning(2, 0, 255);
 
+    auto s = std::chrono::high_resolution_clock::now();
+
     std::thread sound_thread([&snd]() {
         logger.log("Started sound thread");
         /*
@@ -204,8 +211,15 @@ int main(int argc, char** argv) {
         snd.startPlaying(0);
     });
 
-    std::thread display_thread([]() {
-
+    std::thread display_thread([&snd, &s]() {
+        const int samplewidth = 100;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        auto n = std::chrono::high_resolution_clock::now();
+        auto d = std::chrono::duration<double>(n - s); // where in the samples to use
+        int sample = d.count() * snd.info.samplerate;
+        logger.log("Running FFT at sample: " + std::to_string(sample));
+        int below = sample - samplewidth/2;
+        displayFFT(snd.channels[0].buffer, below, samplewidth);
     });
 
     SDL_Event event;
@@ -218,7 +232,6 @@ int main(int argc, char** argv) {
                     running = false;
                     break;
             }
-            // displayFFT(snd);
         }
     }
 
