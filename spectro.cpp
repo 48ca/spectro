@@ -3,6 +3,8 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <climits>
+#include <atomic>
 
 #include "logger.h"
 
@@ -15,8 +17,6 @@
 #include <SDL2/SDL_mixer.h>
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
-
-static SDL_Window* screen;
 
 static Logger logger;
 
@@ -137,7 +137,7 @@ struct arguments parseArgs(int argc, char** argv) {
     return args;
 }
 
-void displayFFT(const std::vector<short>& buffer, int below, int size) {
+void displayFFT(const SDL_Window* scr, const std::vector<short>& buffer, int below, int size) {
     fftw_complex *in, *out;
     fftw_plan p;
 
@@ -150,24 +150,13 @@ void displayFFT(const std::vector<short>& buffer, int below, int size) {
     }
     fftw_execute(p);
     for(int i = 0; i < size; ++i) {
+        out[i][0] = out[i][0]/size;
+        out[i][1] = out[i][1]/size;
+    }
+    for(int i = 0; i < size; ++i) {
         std::cout << sqrt(out[i][0]*out[i][0] + out[i][1]*out[i][1]) << ' ';
     }
     std::cout << '\n';
-}
-
-bool init()
-{
-    if( SDL_Init( SDL_INIT_AUDIO | SDL_INIT_VIDEO ) == -1 )
-    {
-        return false;
-    }
-
-    screen = SDL_CreateWindow("Music",
-                          SDL_WINDOWPOS_UNDEFINED,
-                          SDL_WINDOWPOS_UNDEFINED,
-                          640, 480, SDL_WINDOW_OPENGL);
-
-    return true;
 }
 
 void exit(void) {
@@ -183,7 +172,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if(!init()) {
+    logger.log("Initializing SDL");
+    if( SDL_Init( SDL_INIT_AUDIO | SDL_INIT_VIDEO ) == -1 ) {
         logger.error("Failed to initialize");
         return 1;
     }
@@ -199,31 +189,71 @@ int main(int argc, char** argv) {
     // Mix_AllocateChannels(2);
     // Mix_SetPanning(1, 255, 0);
     // Mix_SetPanning(2, 0, 255);
+    Mix_AllocateChannels(1);
 
-    auto s = std::chrono::high_resolution_clock::now();
-
-    std::thread sound_thread([&snd]() {
+    bool running = true;
+    std::thread sound_thread([&running, &snd]() {
         logger.log("Started sound thread");
         /*
         snd.startPlaying(3.5 * 60 * snd.info.samplerate); // start 3.5 minutes into the song
         Mix_HaltChannel(-1);
         */
         snd.startPlaying(0);
+        while(running) {
+            SDL_Delay(100);
+        }
     });
 
-    std::thread display_thread([&snd, &s]() {
-        const int samplewidth = 100;
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        auto n = std::chrono::high_resolution_clock::now();
-        auto d = std::chrono::duration<double>(n - s); // where in the samples to use
-        int sample = d.count() * snd.info.samplerate;
-        logger.log("Running FFT at sample: " + std::to_string(sample));
-        int below = sample - samplewidth/2;
-        displayFFT(snd.channels[0].buffer, below, samplewidth);
+    auto s = std::chrono::high_resolution_clock::now();
+
+    std::atomic<unsigned> frames(0);
+    std::thread display_thread([&running, &snd, &s, &frames]() {
+        const int samplewidth = 10;
+
+        int width = 1280;
+        int height = 1024;
+
+        SDL_Window* screen = SDL_CreateWindow("Music",
+                              SDL_WINDOWPOS_UNDEFINED,
+                              SDL_WINDOWPOS_UNDEFINED,
+                              width, height, SDL_WINDOW_OPENGL);
+
+        SDL_Renderer* renderer = SDL_CreateRenderer(screen, -1, 0);
+
+        auto displayScope = [&width, &height](SDL_Renderer* const renderer, const std::vector<short>& buffer, int below, int size) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            for(unsigned i = 0; i < size; ++i) {
+                SDL_RenderDrawPoint(renderer, i, height/2 - (height*buffer[below + i]/SHRT_MAX)/5);
+            }
+        };
+
+        while(running) {
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); //red
+            SDL_RenderClear(renderer);
+            auto n = std::chrono::high_resolution_clock::now();
+            auto d = std::chrono::duration<double>(n - s); // where in the samples to use
+            int sample = d.count() * snd.info.samplerate;
+            int below = sample - samplewidth/2;
+            displayScope(renderer, snd.channels[0].buffer, std::max(sample - width/2, 0), width);
+            SDL_RenderPresent(renderer);
+            /*
+            logger.log("Running FFT at sample: " + std::to_string(sample));
+            displayFFT(screen, snd.channels[0].buffer, below, samplewidth);
+            SDL_Delay(1);
+            */
+            frames.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    std::thread fps_thread([&running, &frames]() {
+        while(running) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            unsigned fps = frames.exchange(0, std::memory_order_relaxed);
+            logger.log("FPS: "s  + std::to_string(fps));
+        }
     });
 
     SDL_Event event;
-    bool running = true;
     while(running) {
         while(SDL_PollEvent(&event)) {
             logger.log("got event");
@@ -238,6 +268,7 @@ int main(int argc, char** argv) {
     exit();
     sound_thread.join();
     display_thread.join();
+    fps_thread.join();
 
     return 0;
 }
