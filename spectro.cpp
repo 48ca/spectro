@@ -167,7 +167,7 @@ struct arguments parseArgs(int argc, char** argv) {
     return args;
 }
 
-void displayFFT(const SDL_Window* scr, const std::vector<short>& buffer, int below, int size) {
+void displayFFT(const std::vector<short>& buffer, int below, int size) {
     fftw_complex *in, *out;
     fftw_plan p;
 
@@ -234,18 +234,16 @@ int main(int argc, char** argv) {
         }
     });
 
-    Screens scrs(1, 2); // 1x2 grid of screens
+    Screens scrs(1, snd.info.channels); // 1x2(?) grid of screens
 
     auto s = std::chrono::high_resolution_clock::now();
 
     std::atomic<unsigned> frames(0);
     std::thread display_thread([&running, &snd, &s, &frames, &scrs]() {
-        const int samplewidth = 10;
-
         auto displayScope = [&scrs](unsigned scr, const std::vector<short>& buffer, int below, int size) {
             auto d = scrs.get(0, scr); // x, width, y, height
             SDL_SetRenderDrawColor(scrs.renderer, 255, 255, 255, 255);
-            for(unsigned i = 0; i < size; ++i) {
+            for(int i = 0; i < size; ++i) {
                 SDL_RenderDrawPoint(scrs.renderer, d.x + i, d.y + d.height/2 - (d.height*buffer[below + i]/SHRT_MAX)/2);
             }
         };
@@ -258,8 +256,7 @@ int main(int argc, char** argv) {
             auto n = std::chrono::high_resolution_clock::now();
             auto d = std::chrono::duration<double>(n - s); // where in the samples to use
             int sample = d.count() * snd.info.samplerate;
-            int below = sample - samplewidth/2;
-            for(unsigned i = 0; i < 2; ++i)
+            for(int i = 0; i < snd.info.channels; ++i)
                 displayScope(i, snd.channels[i].buffer, std::max(sample - width/2, 0), width);
 
             SDL_RenderPresent(scrs.renderer);
@@ -268,9 +265,9 @@ int main(int argc, char** argv) {
             displayFFT(screen, snd.channels[0].buffer, below, samplewidth);
             SDL_Delay(1);
             */
+            SDL_Delay(10);
+            frames.fetch_add(1, std::memory_order_relaxed);
         }
-        SDL_Delay(10);
-        frames.fetch_add(1, std::memory_order_relaxed);
     });
 
     std::thread fps_thread([&running, &frames]() {
