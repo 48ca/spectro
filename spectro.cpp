@@ -5,6 +5,7 @@
 #include <chrono>
 #include <climits>
 #include <atomic>
+#include <stdexcept>
 
 #include "logger.h"
 
@@ -26,7 +27,36 @@ struct arguments {
     std::string callee;
 };
 
+static int width = 1280;
+static int height = 1024;
+
 using namespace std::string_literals;
+
+typedef struct {
+    int x;
+    int width;
+    int y;
+    int height;
+} dim_t;
+
+class Screens {
+  private:
+    unsigned a_width; // array width
+    unsigned a_height; // array height
+  public:
+    SDL_Window* window;
+    SDL_Renderer* renderer;
+    Screens(unsigned y = 1, unsigned x = 1) : a_width(x), a_height(y) {
+        if(x == 0 || y == 0) {
+            throw std::runtime_error("Tried to create an invalid screen format");
+        }
+        window = SDL_CreateWindow("Music", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * x, height * y, SDL_WINDOW_OPENGL);
+        renderer = SDL_CreateRenderer(window, -1, 0);
+    }
+    const dim_t get(int y, int x = 0) const { // get base and width for window dimensions
+        return { x * width, width, y * height, height };
+    }
+};
 
 class Channel {
   public:
@@ -204,45 +234,43 @@ int main(int argc, char** argv) {
         }
     });
 
+    Screens scrs(1, 2); // 1x2 grid of screens
+
     auto s = std::chrono::high_resolution_clock::now();
 
     std::atomic<unsigned> frames(0);
-    std::thread display_thread([&running, &snd, &s, &frames]() {
+    std::thread display_thread([&running, &snd, &s, &frames, &scrs]() {
         const int samplewidth = 10;
 
-        int width = 1280;
-        int height = 1024;
-
-        SDL_Window* screen = SDL_CreateWindow("Music",
-                              SDL_WINDOWPOS_UNDEFINED,
-                              SDL_WINDOWPOS_UNDEFINED,
-                              width, height, SDL_WINDOW_OPENGL);
-
-        SDL_Renderer* renderer = SDL_CreateRenderer(screen, -1, 0);
-
-        auto displayScope = [&width, &height](SDL_Renderer* const renderer, const std::vector<short>& buffer, int below, int size) {
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        auto displayScope = [&scrs](unsigned scr, const std::vector<short>& buffer, int below, int size) {
+            auto d = scrs.get(0, scr); // x, width, y, height
+            SDL_SetRenderDrawColor(scrs.renderer, 255, 255, 255, 255);
             for(unsigned i = 0; i < size; ++i) {
-                SDL_RenderDrawPoint(renderer, i, height/2 - (height*buffer[below + i]/SHRT_MAX)/5);
+                SDL_RenderDrawPoint(scrs.renderer, d.x + i, d.y + d.height/2 - (d.height*buffer[below + i]/SHRT_MAX)/2);
             }
         };
 
+        logger.log("Starting display loop");
+
         while(running) {
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); //red
-            SDL_RenderClear(renderer);
+            SDL_SetRenderDrawColor(scrs.renderer, 0, 0, 0, 255);
+            SDL_RenderClear(scrs.renderer);
             auto n = std::chrono::high_resolution_clock::now();
             auto d = std::chrono::duration<double>(n - s); // where in the samples to use
             int sample = d.count() * snd.info.samplerate;
             int below = sample - samplewidth/2;
-            displayScope(renderer, snd.channels[0].buffer, std::max(sample - width/2, 0), width);
-            SDL_RenderPresent(renderer);
+            for(unsigned i = 0; i < 2; ++i)
+                displayScope(i, snd.channels[i].buffer, std::max(sample - width/2, 0), width);
+
+            SDL_RenderPresent(scrs.renderer);
             /*
             logger.log("Running FFT at sample: " + std::to_string(sample));
             displayFFT(screen, snd.channels[0].buffer, below, samplewidth);
             SDL_Delay(1);
             */
-            frames.fetch_add(1, std::memory_order_relaxed);
         }
+        SDL_Delay(10);
+        frames.fetch_add(1, std::memory_order_relaxed);
     });
 
     std::thread fps_thread([&running, &frames]() {
