@@ -21,8 +21,6 @@
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
 
-#define DBRF_REF_SHORT 32768
-
 static Logger logger;
 
 struct arguments {
@@ -318,7 +316,8 @@ int main(int argc, char** argv) {
             logger.log("got event");
             switch(event.type) {
                 case SDL_KEYDOWN:
-                    running = false;
+                    if(event.key.keysym.sym == SDLK_q)
+                        running = false;
                     break;
             }
         }
