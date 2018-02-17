@@ -4,8 +4,10 @@
 #include <thread>
 #include <chrono>
 #include <climits>
+#include <limits>
 #include <atomic>
 #include <stdexcept>
+#include <functional>
 
 #include "logger.h"
 
@@ -19,6 +21,8 @@
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
 
+#define DBRF_REF_SHORT 32768
+
 static Logger logger;
 
 struct arguments {
@@ -27,8 +31,8 @@ struct arguments {
     std::string callee;
 };
 
-static int width = 1280;
-static int height = 1024;
+static int width = 1200;
+static int height = 800;
 
 using namespace std::string_literals;
 
@@ -55,6 +59,16 @@ class Screens {
     }
     const dim_t get(int y, int x = 0) const { // get base and width for window dimensions
         return { x * width, width, y * height, height };
+    }
+};
+
+class Display {
+  private:
+    std::thread thread;
+  public:
+    Display(std::function<void(void)> start): thread(start) {};
+    ~Display() {
+        thread.join();
     }
 };
 
@@ -167,28 +181,6 @@ struct arguments parseArgs(int argc, char** argv) {
     return args;
 }
 
-void displayFFT(const std::vector<short>& buffer, int below, int size) {
-    fftw_complex *in, *out;
-    fftw_plan p;
-
-    in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * size);
-    out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * size);
-    p = fftw_plan_dft_1d(size, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
-    for(int i = 0; i < size; ++i) {
-        in[i][0] = buffer[i + below];
-        in[i][1] = 0;
-    }
-    fftw_execute(p);
-    for(int i = 0; i < size; ++i) {
-        out[i][0] = out[i][0]/size;
-        out[i][1] = out[i][1]/size;
-    }
-    for(int i = 0; i < size; ++i) {
-        std::cout << sqrt(out[i][0]*out[i][0] + out[i][1]*out[i][1]) << ' ';
-    }
-    std::cout << '\n';
-}
-
 void exit(void) {
     logger.log("Exiting...");
     Mix_CloseAudio();
@@ -230,21 +222,59 @@ int main(int argc, char** argv) {
         */
         snd.startPlaying(0);
         while(running) {
-            SDL_Delay(100);
+            SDL_Delay(30);
         }
     });
 
-    Screens scrs(1, snd.info.channels); // 1x2(?) grid of screens
+    constexpr int fftwidth = 3000;
+
+    Screens scrs(snd.info.channels, 2);
 
     auto s = std::chrono::high_resolution_clock::now();
 
+    fftw_complex *in  = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * fftwidth);
+    fftw_complex *out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * fftwidth);
+    fftw_plan p;
+    p = fftw_plan_dft_1d(fftwidth, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+
     std::atomic<unsigned> frames(0);
-    std::thread display_thread([&running, &snd, &s, &frames, &scrs]() {
+    std::thread display_thread([&]() {
+    // std::thread display_thread([&running, &snd, &s, &frames, &scrs]() {
+
         auto displayScope = [&scrs](unsigned scr, const std::vector<short>& buffer, int below, int size) {
-            auto d = scrs.get(0, scr); // x, width, y, height
+            auto d = scrs.get(scr, 0); // x, width, y, height
             SDL_SetRenderDrawColor(scrs.renderer, 255, 255, 255, 255);
-            for(int i = 0; i < size; ++i) {
-                SDL_RenderDrawPoint(scrs.renderer, d.x + i, d.y + d.height/2 - (d.height*buffer[below + i]/SHRT_MAX)/2);
+            for(int i = 1; i < size; ++i) {
+                SDL_RenderDrawLine(scrs.renderer, d.x + i - 1, d.y + d.height/2 - (d.height*buffer[below + i - 1]/SHRT_MAX)/2,
+                        d.x + i, d.y + d.height/2 - (d.height*buffer[below + i]/SHRT_MAX)/2);
+            }
+        };
+
+        auto displayFFT = [&scrs, &in, &out, &p](unsigned scr, const std::vector<short>& buffer, int below) {
+            for(int i = 0; i < fftwidth; ++i) {
+                in[i][0] = (double)(buffer[i + below])/SHRT_MAX;
+                in[i][1] = 0;
+            }
+            fftw_execute(p);
+            for(int i = 0; i < fftwidth/2; ++i) {
+                out[i][0] = (out[i][0]*out[i][0]+out[i][1]*out[i][1]) * 2.0/(fftwidth); // divide by sum(window)
+                out[i][0] = 20 * log10(out[i][0]); // db
+                if(out[i][0] < -80) out[i][0] = -80;
+                out[i][0] /= 80;
+                out[i][0] = out[i][0] + 1;
+            }
+            /*
+            for(int i = 0; i < fftwidth/2; ++i) {
+                std::cout << out[i][0] << ' ';
+            }
+            std::cout << '\n';
+            */
+            auto d = scrs.get(scr, 1); // x, width, y, height
+            for(int i = 0; i < d.width; ++i) {
+                double s = out[i * fftwidth/(d.width * 2)][0];
+                SDL_SetRenderDrawColor(scrs.renderer, 255, 255 * s, 255 * s, 255);
+                SDL_RenderDrawLine(scrs.renderer, d.x + i, d.y + d.height * (1-s/2),
+                        d.x + i, d.y + d.height);
             }
         };
 
@@ -256,8 +286,13 @@ int main(int argc, char** argv) {
             auto n = std::chrono::high_resolution_clock::now();
             auto d = std::chrono::duration<double>(n - s); // where in the samples to use
             int sample = d.count() * snd.info.samplerate;
-            for(int i = 0; i < snd.info.channels; ++i)
-                displayScope(i, snd.channels[i].buffer, std::max(sample - width/2, 0), width);
+            if(sample >= snd.info.frames - width) running = false;
+            for(int i = 0; i < snd.info.channels; ++i) {
+                // auto dwidth = std::min(snd.channels[i].buffer.size() - sample-width/2, width);
+                auto dwidth = width;
+                displayScope(i, snd.channels[i].buffer, std::max(sample - width/2, 0), dwidth);
+                displayFFT(i, snd.channels[i].buffer, std::max(sample - fftwidth/2, 0));
+            }
 
             SDL_RenderPresent(scrs.renderer);
             /*
@@ -265,7 +300,6 @@ int main(int argc, char** argv) {
             displayFFT(screen, snd.channels[0].buffer, below, samplewidth);
             SDL_Delay(1);
             */
-            SDL_Delay(10);
             frames.fetch_add(1, std::memory_order_relaxed);
         }
     });
