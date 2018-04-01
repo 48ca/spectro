@@ -76,10 +76,51 @@ class Channel {
     std::vector<short> buffer;
 };
 
-class Sound { // libsndfile snd SDL_mixer abstraction
+void audioCallback(void* userdata, Uint8* stream, int len) {
+    return;
+}
+
+class Sound;
+
+static Sound* sound;
+
+class Sound { // libsndfile snd SDL_Audio abstraction
   private:
     SNDFILE* file;
+    SDL_AudioSpec spec;
+    SDL_AudioDeviceID dev;
+    bool playing = false;
+    int callbackPosition = 0;
+    int callbackIncrement = 0;
 
+    static void callback(void* userdata, Uint8* stream, int len) {
+        std::cout << "1 playing" << '\n';
+        if(!sound) return;
+        std::cout << "2 playing" << '\n';
+        memset(stream, 0, len);
+        int lenToEnd = sound->wave.size() - sound->callbackPosition;
+        if(!sound->playing || lenToEnd <= 0) {
+            return;
+        }
+        std::cout << "3 playing" << '\n';
+        memcpy(stream, &(sound->wave[sound->callbackPosition]), len < lenToEnd ? len : lenToEnd);
+        sound->callbackPosition += sound->callbackIncrement;
+    }
+    void setup(void) {
+        logger.log("Setting up audio callback");
+        SDL_AudioSpec want;
+        SDL_memset(&want, 0, sizeof(want));
+        want.freq = 41000;
+        want.format = AUDIO_S16SYS;
+        want.channels = 2;
+        want.samples = 4096;
+        want.callback = Sound::callback;
+        sound = this;
+        dev = SDL_OpenAudioDevice(NULL, 0, &want, &spec, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
+        if(dev > 0)
+            logger.log("DEVICE ID: " + std::to_string(dev));
+        callbackIncrement = spec.samples * spec.channels;
+    }
     void open(void) {
         logger.log("Opening file "s + filename.c_str());
         file = sf_open(filename.c_str(), SFM_READ, &info);
@@ -87,13 +128,11 @@ class Sound { // libsndfile snd SDL_mixer abstraction
             logger.error("libsndfile error occurred on read (unrecognized format?)");
             failedToOpen = true;
         }
-        logger.log("Opening audio PCM 16-bit "s + std::to_string(info.samplerate) + "Hz " + std::to_string(info.channels) + " channels");
-        if( Mix_OpenAudio( info.samplerate , AUDIO_S16SYS, info.channels, 4096 ) == -1 )
-            failedToOpen = false;
     }
 
     void fillBuffer(void) {
         wave.resize(info.frames * info.channels);
+        callbackPosition = wave.size();
         sf_count_t read = sf_readf_short(file, &wave[0], info.frames); // short
         logger.log("Read " + std::to_string(read) + " frames");
         for(int i = 0; i < info.channels; ++i) {
@@ -142,24 +181,19 @@ class Sound { // libsndfile snd SDL_mixer abstraction
             logger.error("Attempted to start playing past end of song");
             return false;
         }
-        Mix_Chunk chnk;
-        chnk.allocated = 1;
-        chnk.abuf = (uint8_t*) &(wave[position]);
-        chnk.alen = sizeof(short) * (wave.size() - position);
-        chnk.volume = 100; // 128 = MAX
-        if(Mix_PlayChannel(-1, &chnk, 0) == -1) {
-            logger.error("Error in Mix_PlayChannel: "s + Mix_GetError());
-            return false;
-        }
+        callbackPosition = position;
         return true;
     }
 
     Sound(std::string fn) : file(nullptr), filename(fn) {
+        setup();
         open();
     }
     ~Sound() {
         if(file != nullptr)
             sf_close(file);
+        if(dev > 0)
+            SDL_CloseAudioDevice(dev);
     }
 };
 
@@ -181,8 +215,6 @@ struct arguments parseArgs(int argc, char** argv) {
 
 void exit(void) {
     logger.log("Exiting...");
-    Mix_CloseAudio();
-    Mix_Quit();
     SDL_Quit();
 }
 
@@ -206,17 +238,11 @@ int main(int argc, char** argv) {
     snd.displayInfo();
     snd.read();
 
-    // Mix_AllocateChannels(2);
-    // Mix_SetPanning(1, 255, 0);
-    // Mix_SetPanning(2, 0, 255);
-    Mix_AllocateChannels(1);
-
     bool running = true;
     std::thread sound_thread([&running, &snd]() {
         logger.log("Started sound thread");
         /*
         snd.startPlaying(3.5 * 60 * snd.info.samplerate); // start 3.5 minutes into the song
-        Mix_HaltChannel(-1);
         */
         snd.startPlaying(0);
         while(running) {
@@ -270,7 +296,7 @@ int main(int argc, char** argv) {
             auto d = scrs.get(scr, 1); // x, width, y, height
             for(int i = 0; i < d.width; ++i) {
                 double s = out[i * fftwidth/(d.width * 2)][0];
-                SDL_SetRenderDrawColor(scrs.renderer, 255, 255 * s, 255 * s, 255);
+                // SDL_SetRenderDrawColor(scrs.renderer, 255, 255 * s, 255 * s, 255);
                 SDL_RenderDrawLine(scrs.renderer, d.x + i, d.y + d.height * (1-s/2),
                         d.x + i, d.y + d.height);
             }
