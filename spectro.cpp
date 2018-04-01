@@ -52,7 +52,7 @@ class Screens {
         if(x == 0 || y == 0) {
             throw std::runtime_error("Tried to create an invalid screen format");
         }
-        window = SDL_CreateWindow("Music", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * x, height * y, SDL_WINDOW_OPENGL);
+        window = SDL_CreateWindow("Music", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * x, height * y, SDL_WINDOW_OPENGL | SDL_WINDOW_BORDERLESS);
         renderer = SDL_CreateRenderer(window, -1, 0);
     }
     const dim_t get(int y, int x = 0) const { // get base and width for window dimensions
@@ -76,50 +76,42 @@ class Channel {
     std::vector<short> buffer;
 };
 
-void audioCallback(void* userdata, Uint8* stream, int len) {
-    return;
-}
-
-class Sound;
-
-static Sound* sound;
-
 class Sound { // libsndfile snd SDL_Audio abstraction
   private:
     SNDFILE* file;
     SDL_AudioSpec spec;
     SDL_AudioDeviceID dev;
-    bool playing = false;
     int callbackPosition = 0;
     int callbackIncrement = 0;
+    int bufferSize = 0;
 
-    static void callback(void* userdata, Uint8* stream, int len) {
-        std::cout << "1 playing" << '\n';
-        if(!sound) return;
-        std::cout << "2 playing" << '\n';
+    static void forwardCallback(void* userdata, Uint8* stream, int len) {
+        static_cast<Sound*>(userdata)->callback(reinterpret_cast<short*>(stream), len);
+    }
+    void callback(short* stream, int len) {
+        int lenToEnd = bufferSize - callbackPosition;
         memset(stream, 0, len);
-        int lenToEnd = sound->wave.size() - sound->callbackPosition;
-        if(!sound->playing || lenToEnd <= 0) {
+        if(!playing || lenToEnd <= 0) {
             return;
         }
-        std::cout << "3 playing" << '\n';
-        memcpy(stream, &(sound->wave[sound->callbackPosition]), len < lenToEnd ? len : lenToEnd);
-        sound->callbackPosition += sound->callbackIncrement;
+        memcpy(stream, &(wave[callbackPosition]), len < lenToEnd ? len : lenToEnd);
+        callbackPosition += callbackIncrement;
     }
     void setup(void) {
         logger.log("Setting up audio callback");
         SDL_AudioSpec want;
         SDL_memset(&want, 0, sizeof(want));
-        want.freq = 41000;
+        want.freq = info.samplerate;
         want.format = AUDIO_S16SYS;
-        want.channels = 2;
-        want.samples = 4096;
-        want.callback = Sound::callback;
-        sound = this;
+        want.channels = info.channels;
+        want.samples = 512;
+        want.callback = Sound::forwardCallback;
+        want.userdata = this;
         dev = SDL_OpenAudioDevice(NULL, 0, &want, &spec, SDL_AUDIO_ALLOW_FORMAT_CHANGE);
         if(dev > 0)
             logger.log("DEVICE ID: " + std::to_string(dev));
         callbackIncrement = spec.samples * spec.channels;
+        SDL_PauseAudioDevice(dev, 0);
     }
     void open(void) {
         logger.log("Opening file "s + filename.c_str());
@@ -132,7 +124,7 @@ class Sound { // libsndfile snd SDL_Audio abstraction
 
     void fillBuffer(void) {
         wave.resize(info.frames * info.channels);
-        callbackPosition = wave.size();
+        bufferSize = wave.size();
         sf_count_t read = sf_readf_short(file, &wave[0], info.frames); // short
         logger.log("Read " + std::to_string(read) + " frames");
         for(int i = 0; i < info.channels; ++i) {
@@ -151,6 +143,7 @@ class Sound { // libsndfile snd SDL_Audio abstraction
     std::vector<short> wave; // libsndfile
     // std::vector<short> buffer;
     bool failedToOpen = false;
+    bool playing = false;
 
     std::string getHumanLength() const {
         if(!info.frames) return "ERROR";
@@ -174,6 +167,10 @@ class Sound { // libsndfile snd SDL_Audio abstraction
             fillBuffer();
     }
 
+    int getCallbackPosition() {
+        return callbackPosition;
+    }
+
     bool startPlaying(unsigned sample) {
         int position = sample * info.channels;
         int len = sizeof(short) * (wave.size() - position);
@@ -182,12 +179,13 @@ class Sound { // libsndfile snd SDL_Audio abstraction
             return false;
         }
         callbackPosition = position;
+        playing = true;
         return true;
     }
 
     Sound(std::string fn) : file(nullptr), filename(fn) {
-        setup();
         open();
+        setup();
     }
     ~Sound() {
         if(file != nullptr)
@@ -225,7 +223,7 @@ int main(int argc, char** argv) {
     }
 
     logger.log("Initializing SDL");
-    if( SDL_Init( SDL_INIT_AUDIO | SDL_INIT_VIDEO ) == -1 ) {
+    if( SDL_Init( SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_AUDIO ) == -1 ) {
         logger.error("Failed to initialize");
         return 1;
     }
@@ -304,12 +302,20 @@ int main(int argc, char** argv) {
 
         logger.log("Starting display loop");
 
+        int oldsample = -1;
         while(running) {
-            SDL_SetRenderDrawColor(scrs.renderer, 0, 0, 0, 255);
+            SDL_SetRenderDrawColor(scrs.renderer, 0, 0, 0, 0);
             SDL_RenderClear(scrs.renderer);
+            /*
             auto n = std::chrono::high_resolution_clock::now();
             auto d = std::chrono::duration<double>(n - s); // where in the samples to use
             int sample = d.count() * snd.info.samplerate;
+            */
+            int sample = snd.getCallbackPosition()/snd.info.channels;
+            if(sample == oldsample) {
+                SDL_Delay(10);
+                continue;
+            }
             if(sample >= snd.info.frames - width) running = false;
             for(int i = 0; i < snd.info.channels; ++i) {
                 // auto dwidth = std::min(snd.channels[i].buffer.size() - sample-width/2, width);
@@ -324,6 +330,7 @@ int main(int argc, char** argv) {
             displayFFT(screen, snd.channels[0].buffer, below, samplewidth);
             SDL_Delay(1);
             */
+            oldsample = sample;
             frames.fetch_add(1, std::memory_order_relaxed);
         }
     });
@@ -344,10 +351,15 @@ int main(int argc, char** argv) {
                 case SDL_KEYDOWN:
                     if(event.key.keysym.sym == SDLK_q)
                         running = false;
+                    if(event.key.keysym.sym == SDLK_SPACE)
+                        snd.playing = !snd.playing;
                     break;
             }
         }
     }
+
+    fftw_free(in);
+    fftw_free(out);
 
     exit();
     sound_thread.join();
