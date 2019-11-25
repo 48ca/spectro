@@ -17,7 +17,7 @@
 #include <complex.h> // for fftw_complex == double complex
 #include <fftw3.h>
 
-#include <SDL2/SDL_mixer.h>
+#include <SDL2/SDL_audio.h>
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL.h>
 
@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
 
     Screens scrs(snd.info.channels, 2);
 
-    auto s = std::chrono::high_resolution_clock::now();
+    // auto s = std::chrono::high_resolution_clock::now();
 
     fftw_complex *in  = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * fftwidth);
     fftw_complex *out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * fftwidth);
@@ -346,7 +346,6 @@ int main(int argc, char** argv) {
     SDL_Event event;
     while(running) {
         while(SDL_PollEvent(&event)) {
-            logger.log("got event");
             switch(event.type) {
                 case SDL_KEYDOWN:
                     if(event.key.keysym.sym == SDLK_q)
